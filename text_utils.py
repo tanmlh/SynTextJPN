@@ -18,7 +18,6 @@ from PIL import Image
 import math
 from common import *
 import codecs
-from logger import logger
 import pdb
 
 import nltk, re, pprint
@@ -356,14 +355,18 @@ class RenderFont(object):
         rW = np.median(np.sum(m,axis=1))
         return rH,rW
 
-    def sample_font_height_px(self,h_min,h_max):
+    def sample_font_height_px(self,h_min,h_max, seed=None):
         # if np.random.rand() < self.p_flat:
         #     rnd = np.random.rand()
         # else:
+        if seed is not None:
+            np.random.seed(seed)
         rnd = np.random.beta(2.0,5.0)
 
         h_range = h_max - h_min
         f_h = np.floor(h_min + h_range*rnd)
+
+        np.random.seed()
         return f_h
 
     def bb_xywh2coords(self,bbs):
@@ -381,7 +384,8 @@ class RenderFont(object):
         return coords
 
 
-    def render_sample(self,font,mask, given_bb=False, bound_bb=None):
+    def render_sample(self,font,mask, given_bb=False, bound_bb=None, text_prefix='',
+                      height_seed=None):
         """
         Places text in the "collision-free" region as indicated
         in the mask -- 255 for unsafe, 0 for safe.
@@ -410,10 +414,10 @@ class RenderFont(object):
             if given_bb:
                 bound_h = bound_bb[3] - bound_bb[1]
                 bound_w = bound_bb[2] - bound_bb[0]
-                f_h_px = self.sample_font_height_px(bound_h / 2, bound_h)
+                f_h_px = self.sample_font_height_px(bound_h / 2, bound_h, height_seed)
             else:
                 # sample a random font-height:
-                f_h_px = self.sample_font_height_px(self.min_font_h, max_font_h)
+                f_h_px = self.sample_font_height_px(self.min_font_h, max_font_h, hight_seed)
 
             # convert from pixel-height to font-point-size:
             f_h = self.font_state.get_font_size(font, f_h_px)
@@ -436,7 +440,7 @@ class RenderFont(object):
 
             # sample text:
             text_type = sample_weighted(self.p_text)
-            text = self.text_source.sample(nline,nchar,text_type)
+            text = self.text_source.sample(nline,nchar,text_type, text_prefix)
 
             if len(text)==0 or np.any([len(line)==0 for line in text]):
                 continue
@@ -513,7 +517,7 @@ class FontState(object):
         if size is None:
             size = 12 # doesn't matter as we take the RATIO
         chars = ''.join(self.char_freq.keys())
-        w = np.array(self.char_freq.values())
+        w = np.array(list(self.char_freq.values()))
 
         # get the [height,width] of each character:
         try:
@@ -529,6 +533,7 @@ class FontState(object):
             r_avg = np.sum(w*r)
             return r_avg
         except:
+            print('fail to get aspect ratio!')
             return 1.0
 
     def get_font_size(self, font, font_size_px):
@@ -539,12 +544,13 @@ class FontState(object):
         return m[0]*font_size_px + m[1] #linear model
 
 
-    def sample(self):
+    def sample(self, font_idx=None):
         """
         Samples from the font state distribution
         """
+        font_idx = font_idx if font_idx is not None else int(np.random.randint(0, len(self.fonts)))
         return {
-            'font': self.fonts[int(np.random.randint(0, len(self.fonts)))],
+            'font': self.fonts[font_idx],
             'size': self.size[1]*np.random.randn() + self.size[0],
             'underline': np.random.rand() < self.underline,
             'underline_adjustment': max(2.0, min(-2.0, self.underline_adjustment[1]*np.random.randn() + self.underline_adjustment[0])),
@@ -668,9 +674,10 @@ class TextSource(object):
         elif self.lang == "JPN":
             chcnt = 0
             line = txt  # .decode('utf-8')
-            for ch in line:
-                if ch.isalnum() or self.is_cjk(ch):
-                    chcnt += 1
+            for chs in line:
+                for ch in chs:
+                    if ch.isalnum() or self.is_cjk(ch):
+                        chcnt += 1
 
             return float(chcnt) / (len(txt) + 0.0) > f
         # return np.sum([not ch.isalnum() for ch in txt])/(len(txt)+0.0) <= f
@@ -709,15 +716,25 @@ class TextSource(object):
             lines[i] = ' '*lspace+l+' '*rspace
         return lines
 
-    def get_lines(self, nline, nword, nchar_max, f=0.35, niter=100):
+    def get_lines(self, nline, nword, nchar_max, f=0.35, niter=100, prefix=''):
 
         def h_lines(niter=100):
             lines = ['']
             iter = 0
+            merged_sents_num = 10
             while not np.all(self.is_good(lines,f)) and iter < niter:
                 iter += 1
-                line_start = np.random.choice(len(self.sents)-nline)
-                lines = [self.sents[line_start+i] for i in range(nline)]
+                line_start = np.random.choice(len(self.sents)-nline * merged_sents_num)
+                merged_sents = []
+                lines = []
+
+                for i in range(nline):
+                    merged_sents = []
+                    for j in range(merged_sents_num):
+                        merged_sents += self.sents[line_start+i*merged_sents_num+j]
+                    lines.append(merged_sents)
+
+                # lines = [self.sents[line_start+i*merged_sents_num] for i in range(nline)]
             return lines
 
         lines = ['']
@@ -730,19 +747,22 @@ class TextSource(object):
             nline = len(lines)
             for i in range(nline):
                 words = lines[i]
-                dw = len(words)-nword[i]
-                if dw > 0:
-                    first_word_index = random.choice(range(dw+1))
-                    # lines[i] = ' '.join(words[first_word_index:first_word_index+nword[i]])
-                    lines[i] = ''.join(words[first_word_index:first_word_index+nword[i]])
-                else:
-                    lines[i] = ''.join(words)
+                # dw = len(words)-nword[i]
+                # if dw > 0:
+                #     first_word_index = random.choice(range(dw+1))
+                #     # lines[i] = ' '.join(words[first_word_index:first_word_index+nword[i]])
+                #     lines[i] = ''.join(words[first_word_index:first_word_index+nword[i]])
+                # else:
+                lines[i] = ''.join(words)
+                if nchar_max > 5:
+                    lines[i] = prefix + lines[i]
 
                 # while len(lines[i]) > nchar_max: #chop-off characters from end:
                 #     if not np.any([ch.isspace() for ch in lines[i]]):
                 #         lines[i] = ''
                 #     else:
                 #         lines[i] = lines[i][:len(lines[i])-lines[i][::-1].find(' ')].strip()
+
                 if len(lines[i]) > nchar_max:
                     lines[i] = lines[i][:nchar_max]
 
@@ -754,8 +774,8 @@ class TextSource(object):
         else:
             return lines
 
-    def sample(self, nline_max,nchar_max,kind='WORD'):
-        return self.fdict[kind](nline_max,nchar_max)
+    def sample(self, nline_max,nchar_max,kind='WORD', prefix=''):
+        return self.fdict[kind](nline_max,nchar_max, prefix)
 
     def sample_word(self,nline_max,nchar_max,niter=100):
         rand_line = self.sents[np.random.choice(len(self.sents))]
@@ -775,7 +795,7 @@ class TextSource(object):
             return rand_word
 
 
-    def sample_line(self,nline_max,nchar_max):
+    def sample_line(self,nline_max,nchar_max, prefix=''):
         # nline = nline_max+1
         # while nline > nline_max:
         #     nline = np.random.choice([1,2,3], p=self.p_line_nline)
@@ -785,9 +805,10 @@ class TextSource(object):
                  # for _ in range(nline)]
         # nword = [max(1,int(np.ceil(n))) for n in nword]
 
-        nword = [np.random.randint(nchar_max // 3, nchar_max) for _ in range(nline)]
+        nword = [np.random.randint(nchar_max, nchar_max+1) for _ in range(nline)]
 
-        lines = self.get_lines(nline, nword, nchar_max, f=0.35)
+        lines = self.get_lines(nline, nword, nchar_max, f=0.35, prefix=prefix)
+
         if lines is not None:
             return '\n'.join(lines)
         else:

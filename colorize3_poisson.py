@@ -303,7 +303,7 @@ class Colorize(object):
         return Layer(alpha=text_arr, color=fg_col), fg_col, bg_col
 
 
-    def process(self, text_arr, bg_arr, min_h):
+    def process(self, text_arr, bg_arr, min_h, seed=None):
         """
         text_arr : one alpha mask : nxm, uint8
         bg_arr   : background image: nxmx3, uint8
@@ -311,6 +311,8 @@ class Colorize(object):
 
         return text_arr blit onto bg_arr.
         """
+        if seed is not None:
+            np.random.seed(seed)
         # decide on a color for the text:
         l_text, fg_col, bg_col = self.color_text(text_arr, min_h, bg_arr)
         bg_col = np.mean(np.mean(bg_arr,axis=0),axis=0)
@@ -369,6 +371,8 @@ class Colorize(object):
         # plt.subplot(1,3,3)
         # plt.imshow(l_out)
         # plt.show()
+        if seed is not None:
+            np.random.seed()
         
         if l_out is None:
             # poisson recontruction produced
@@ -405,7 +409,7 @@ class Colorize(object):
         print("color diff percentile :", diff)
         return diff, (bgo,txto)
 
-    def color(self, bg_arr, text_arr, hs, place_order=None, pad=20):
+    def color(self, bg_arr, text_arr, hs, place_order=None, pad=20, seed=None):
         """
         Return colorized text image.
 
@@ -449,7 +453,7 @@ class Colorize(object):
             w,h = text_patch.shape
             bg = bg_arr[l[0]:l[0]+w,l[1]:l[1]+h,:]
 
-            rdr0 = self.process(text_patch, bg, hs[i])
+            rdr0 = self.process(text_patch, bg, hs[i], seed=seed)
             rendered.append(rdr0)
 
             bg_arr[l[0]:l[0]+w,l[1]:l[1]+h,:] = rdr0#rendered[-1]
